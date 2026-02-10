@@ -19,3 +19,11 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - no bots spawning currently
 - loopback network only
 - no jumping (see above)
+- no menu
+- one arena only
+
+## Progress
+- Renders arena using original pk3 files
+- uses bytecode architecture of original source code https://github.com/id-Software/Quake-III-Arena
+- runs on arm as the internal vm was designed to run on any os, any architecture
+
