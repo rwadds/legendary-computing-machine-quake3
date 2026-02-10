@@ -5,7 +5,7 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 
 ## to run 
 - clone, build in xcode
-- download quake3-baseq3.zip from here https://archive.org/download/quake3-baseq3
+- download quake3-baseq3.zip (10-May-2024 06:21	604.7M) from here https://archive.org/download/quake3-baseq3
 - unzip it and put the unzipped baseq3 dir  
 - where mac.quake3 executable lives
 
