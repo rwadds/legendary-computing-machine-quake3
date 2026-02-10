@@ -1,9 +1,6 @@
 //
 //  Renderer.swift
 //  mac.quake3
-//
-//  Created by Roderic Wadds on 2/8/26.
-//
 
 // Our platform independent renderer class
 
@@ -236,9 +233,12 @@ class Renderer: NSObject, MTKViewDelegate {
     
     private func updateGameState() {
         /// Update any game state before rendering
-        
+
+        // Run engine frame
+        Q3Engine.shared.frame()
+
         uniforms[0].projectionMatrix = projectionMatrix
-        
+
         let rotationAxis = SIMD3<Float>(1, 1, 0)
         let modelMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
         let viewMatrix = matrix4x4_translation(0.0, 0.0, -8.0)
@@ -267,7 +267,8 @@ class Renderer: NSObject, MTKViewDelegate {
         self.updateGameState()
         
         guard let renderEncoder = self.commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
-            fatalError("Failed to create render command encoder")
+            Q3Console.shared.error("Failed to create render command encoder")
+            return
         }
         
         /// Final pass rendering code here

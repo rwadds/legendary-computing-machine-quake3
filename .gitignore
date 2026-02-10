@@ -1,0 +1,30 @@
+# Environment files (contain secrets)
+.env
+.env.*
+!.env.example
+
+# Build outputs
+bin/
+obj/
+secrets/
+baseq3/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Logs
+logs/
+*.log
+
+# Uploads (user data)
+uploads/
+
+# macOS
+.DS_Store
+
+# Testing
+TestResults/
+coverage/
