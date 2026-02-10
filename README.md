@@ -17,7 +17,7 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - Running on M4 Pro 2704x1384 composited
 
 ## Current limitations
-- has no collision detection (it's like Minecraft creative mode) you fly everywhere
+- has no collision detection + no gravity (it's like Minecraft creative mode) you fly everywhere and through walls
 - no weapons
 - no bots spawning currently
 - loopback network only
