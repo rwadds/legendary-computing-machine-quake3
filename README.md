@@ -12,3 +12,10 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 ## FPS
 - Runs at ~100fps (asking for 120) but has 0 optimizations
 - Running on M4 Pro 2704x1384 composited
+
+## Current limitations
+- has no collision detection (it's like Minecraft creative mode) you fly everywhere
+- no weapons
+- no bots spawning currently
+- loopback network only
+- no jumping (see above)
