@@ -8,3 +8,7 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - download quake3-baseq3.zip from here https://archive.org/download/quake3-baseq3
 - unzip it and put the unzipped baseq3 dir  
 - where mac.quake3 executable lives
+
+## FPS
+- Runs at ~100fps (asking for 120) but has 0 optimizations
+- Running on M4 Pro 2704x1384 composited
