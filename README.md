@@ -30,7 +30,7 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - uses bytecode architecture of original source code https://github.com/id-Software/Quake-III-Arena
 - runs on arm as the internal vm was designed to run on any os, any architecture
 
-#Architecture
+# Architecture
 
 A native macOS port of Quake III Arena, written entirely in Swift with Metal 4 rendering. The engine runs the original QVM bytecode for game logic (`qagame.qvm`), client-game presentation (`cgame.qvm`), and UI menus (`ui.qvm`), communicating through syscall dispatch tables that mirror the original id Software API.
 
