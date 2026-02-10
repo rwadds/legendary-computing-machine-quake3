@@ -17,15 +17,16 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - Running on M4 Pro 2704x1384 composited
 
 ## Current limitations
-- has no collision detection + no gravity (it's like Minecraft creative mode) you fly everywhere and through walls
 - no weapons
 - no bots spawning currently
 - loopback network only
-- no jumping (see above)
 - no menu
 - one arena only
 
 ## Progress
+- Has collision detection
+- Has Gravity
+- Has jumping with spacebar
 - Renders arena using original pk3 files
 - uses bytecode architecture of original source code https://github.com/id-Software/Quake-III-Arena
 - runs on arm as the internal vm was designed to run on any os, any architecture
