@@ -13,7 +13,7 @@ Converted https://github.com/id-Software/Quake-III-Arena to swift and Metal 4 to
 - once you unzip quake3-baseq3.zip you should look for pak0.pk3 which has the date Sunday, November 21, 1999 at 10:32 PM and file size 479,493,658 bytes (479.5 MB on disk)
 
 ## FPS
-- Runs at ~100fps (asking for 120) but has 0 optimizations
+- Runs at ~100fps (asking for 120) but has 0 optimizations (see limitations below)
 - Running on M4 Pro 2704x1384 composited
 
 ## Current limitations
