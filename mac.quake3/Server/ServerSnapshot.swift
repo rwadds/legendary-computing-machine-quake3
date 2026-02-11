@@ -57,6 +57,14 @@ class ServerSnapshot {
         if clientNum < sv.maxClients && sv.gameClientsBaseAddr != 0 && sv.gameClientSize > 0 {
             let psAddr = sv.gameClientsBaseAddr + Int32(clientNum * sv.gameClientSize)
             snap.ps = sv.readPlayerStateFromVM(vm: vm, addr: psAddr)
+
+            // DEBUG: log weapon stats periodically
+            if sv.snapshotCounter % 300 == 1 {
+                let w = snap.ps.stats[2]  // STAT_WEAPONS bitmask
+                let cur = snap.ps.weapon
+                let ammoRL = snap.ps.ammo[5]  // WP_ROCKET_LAUNCHER ammo
+                Q3Console.shared.print("[SNAP] stats[STAT_WEAPONS]=\(w) (0x\(String(w, radix: 16))) weapon=\(cur) RL_ammo=\(ammoRL)")
+            }
         }
 
         // Add visible entities — read entity state from VM memory

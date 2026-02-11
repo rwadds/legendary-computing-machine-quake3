@@ -171,12 +171,21 @@ class RenderEntity {
         let modelMatrix = buildModelMatrix(entity: entity)
 
         // Entity color (normalized from RGBA8 to float)
-        let entColor = SIMD4<Float>(
-            Float(entity.shaderRGBA.x) / 255.0,
-            Float(entity.shaderRGBA.y) / 255.0,
-            Float(entity.shaderRGBA.z) / 255.0,
-            Float(entity.shaderRGBA.w) / 255.0
-        )
+        // Q3: shaderRGBA=(0,0,0,0) means "unset" — treat as full white.
+        // Only rgbGen entity shaders use the entity color; without lighting
+        // we default to white so the texture renders at full brightness.
+        let rgba = entity.shaderRGBA
+        let entColor: SIMD4<Float>
+        if rgba.x == 0 && rgba.y == 0 && rgba.z == 0 && rgba.w == 0 {
+            entColor = SIMD4<Float>(1, 1, 1, 1)
+        } else {
+            entColor = SIMD4<Float>(
+                Float(rgba.x) / 255.0,
+                Float(rgba.y) / 255.0,
+                Float(rgba.z) / 255.0,
+                Float(rgba.w) / 255.0
+            )
+        }
 
         let frame = max(0, min(Int(entity.frame), model.numFrames - 1))
         let oldFrame = max(0, min(Int(entity.oldframe), model.numFrames - 1))
@@ -249,7 +258,8 @@ class RenderEntity {
                 fragmentTable.setTexture(tex.gpuResourceID, index: TextureIndex.color.rawValue)
             }
 
-            // Set default opaque pipeline
+            // Entity models always use the default opaque pipeline.
+            // Shader-aware blending applies to world BSP surfaces, not MD3 models.
             encoder.setRenderPipelineState(pipelineManager.defaultPipeline)
             encoder.setDepthStencilState(pipelineManager.defaultDepthState)
             // Weapon viewmodels (RF_DEPTHHACK) often have mirrored axes — disable culling
@@ -322,12 +332,18 @@ class RenderEntity {
 
         let r = entity.radius
         let origin = entity.origin
-        let entColor = SIMD4<Float>(
-            Float(entity.shaderRGBA.x) / 255.0,
-            Float(entity.shaderRGBA.y) / 255.0,
-            Float(entity.shaderRGBA.z) / 255.0,
-            Float(entity.shaderRGBA.w) / 255.0
-        )
+        let srgba = entity.shaderRGBA
+        let entColor: SIMD4<Float>
+        if srgba.x == 0 && srgba.y == 0 && srgba.z == 0 && srgba.w == 0 {
+            entColor = SIMD4<Float>(1, 1, 1, 1)
+        } else {
+            entColor = SIMD4<Float>(
+                Float(srgba.x) / 255.0,
+                Float(srgba.y) / 255.0,
+                Float(srgba.z) / 255.0,
+                Float(srgba.w) / 255.0
+            )
+        }
 
         let baseVertex = vertexOffset
 
@@ -453,22 +469,6 @@ class RenderEntity {
             fragmentTable.setTexture(whiteTex.gpuResourceID, index: TextureIndex.lightmap.rawValue)
         }
 
-        // Alpha-blended pipeline for polys (most Q3 polys use additive or alpha blend)
-        let blendKey = PipelineKey(
-            srcBlend: 0x05,   // GLS_SRCBLEND_SRC_ALPHA
-            dstBlend: 0x06,   // GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA
-            depthWrite: false,
-            depthTest: true,
-            cullMode: 2,      // two-sided
-            alphaTest: 0
-        )
-        if let pipeline = try? pipelineManager.getOrCreatePipeline(key: blendKey, view: view) {
-            encoder.setRenderPipelineState(pipeline)
-        }
-        let depthState = pipelineManager.getDepthState(write: false, test: true)
-        encoder.setDepthStencilState(depthState)
-        encoder.setCullMode(.none)
-
         for poly in polys {
             let numVerts = poly.vertices.count
             guard numVerts >= 3 else { continue }
@@ -507,17 +507,51 @@ class RenderEntity {
                 indexOffset += 3
             }
 
-            // Resolve texture
-            let texHandle: Int
+            // Resolve shader → texture and blend mode from shader definition
+            var texHandle = textureCache.whiteTexture
+            var srcBits: UInt32 = 0x05   // default: SRC_ALPHA
+            var dstBits: UInt32 = 0x06   // default: ONE_MINUS_SRC_ALPHA
             if let shaderName = rendererAPI.shaderNames[poly.shader] {
-                texHandle = textureCache.findOrLoad(shaderName)
-            } else {
-                texHandle = textureCache.whiteTexture
+                if let shaderDef = ShaderParser.shared.findShader(shaderName),
+                   !shaderDef.stages.isEmpty {
+                    let stage = shaderDef.stages[0]
+                    // Get texture from first stage's first bundle
+                    if !stage.bundles[0].imageNames.isEmpty {
+                        texHandle = textureCache.findOrLoad(stage.bundles[0].imageNames[0])
+                    } else {
+                        texHandle = textureCache.findOrLoad(shaderName)
+                    }
+                    // Extract blend mode from stateBits
+                    let sb = stage.stateBits & GLState.srcBlendBits.rawValue
+                    let db = (stage.stateBits & GLState.dstBlendBits.rawValue) >> 4
+                    if sb != 0 || db != 0 {
+                        srcBits = sb
+                        dstBits = db
+                    }
+                } else {
+                    texHandle = textureCache.findOrLoad(shaderName)
+                }
             }
 
             if let tex = textureCache.getTexture(texHandle) {
                 fragmentTable.setTexture(tex.gpuResourceID, index: TextureIndex.color.rawValue)
             }
+
+            // Set pipeline with shader-specific blend mode
+            let blendKey = PipelineKey(
+                srcBlend: srcBits,
+                dstBlend: dstBits,
+                depthWrite: false,
+                depthTest: true,
+                cullMode: 2,
+                alphaTest: 0
+            )
+            if let pipeline = try? pipelineManager.getOrCreatePipeline(key: blendKey, view: view) {
+                encoder.setRenderPipelineState(pipeline)
+            }
+            let depthState = pipelineManager.getDepthState(write: false, test: true)
+            encoder.setDepthStencilState(depthState)
+            encoder.setCullMode(.none)
 
             // Write stage uniforms with vertex color enabled
             if let uniformBuf = stageUniformBuffer {
@@ -608,12 +642,18 @@ class RenderEntity {
         let p2 = end + right * width
         let p3 = end - right * width
 
-        let entColor = SIMD4<Float>(
-            Float(entity.shaderRGBA.x) / 255.0,
-            Float(entity.shaderRGBA.y) / 255.0,
-            Float(entity.shaderRGBA.z) / 255.0,
-            Float(entity.shaderRGBA.w) / 255.0
-        )
+        let brgba = entity.shaderRGBA
+        let entColor: SIMD4<Float>
+        if brgba.x == 0 && brgba.y == 0 && brgba.z == 0 && brgba.w == 0 {
+            entColor = SIMD4<Float>(1, 1, 1, 1)
+        } else {
+            entColor = SIMD4<Float>(
+                Float(brgba.x) / 255.0,
+                Float(brgba.y) / 255.0,
+                Float(brgba.z) / 255.0,
+                Float(brgba.w) / 255.0
+            )
+        }
 
         let baseVertex = vertexOffset
         let positions = [p0, p1, p2, p3]
@@ -732,7 +772,10 @@ class RenderEntity {
     ) {
         guard let uniformBuf = stageUniformBuffer else { return }
         let offset = stageUniformDrawIndex * stageUniformAlignment
-        guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else { return }
+        guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else {
+            Q3Console.shared.warning("Stage uniform buffer overflow at draw \(stageUniformDrawIndex)")
+            return
+        }
 
         let ptr = (uniformBuf.contents() + offset).bindMemory(to: Q3StageUniforms.self, capacity: 1)
         var stageUniforms = Q3StageUniforms()

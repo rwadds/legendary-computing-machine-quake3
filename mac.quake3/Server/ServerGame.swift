@@ -281,11 +281,40 @@ extension ServerMain {
             let maxCount = Int(args[4])
             let count = ServerWorld.shared.entitiesInBox(mins: mins, maxs: maxs,
                                                          listAddr: listAddr, maxCount: maxCount, vm: vm)
+            // DEBUG: periodic log of EntitiesInBox results
+            entitiesInBoxCallCount += 1
+            if entitiesInBoxCallCount % 600 == 1 {
+                // Also count linked entities with CONTENTS_TRIGGER
+                var triggerCount = 0
+                var totalLinked = 0
+                for i in 0..<numEntities {
+                    guard i < gentities.count else { break }
+                    if gentities[i].r.linked {
+                        totalLinked += 1
+                        if gentities[i].r.contents & 0x40000000 != 0 { // CONTENTS_TRIGGER
+                            triggerCount += 1
+                        }
+                    }
+                }
+                Q3Console.shared.print("[EIB-DBG] query mins=\(mins) maxs=\(maxs) → \(count) found (linked=\(totalLinked) triggers=\(triggerCount))")
+            }
             return Int32(count)
 
         case .gEntityContact:
-            // Simplified collision check
-            return 0
+            // Test if world-space box (mins, maxs) overlaps entity's bounds
+            let ecMins = readVec3(vm: vm, addr: args[1])
+            let ecMaxs = readVec3(vm: vm, addr: args[2])
+            // args[3] is a gentity_t pointer in VM; first field (entityState_t.number) is the entity index
+            let ecEntNum = Int(vm.readInt32(fromData: Int(args[3])))
+            let contact = entityContact(mins: ecMins, maxs: ecMaxs, entNum: ecEntNum)
+            // DEBUG: log entity contact checks
+            entityContactCallCount += 1
+            if entityContactCallCount % 600 == 1 {
+                let entType = ecEntNum < gentities.count ? gentities[ecEntNum].s.eType : -1
+                let entContents = ecEntNum < gentities.count ? gentities[ecEntNum].r.contents : 0
+                Q3Console.shared.print("[EC-DBG] contact ent#\(ecEntNum) type=\(entType) contents=0x\(String(entContents, radix: 16)) → \(contact)")
+            }
+            return contact ? 1 : 0
 
         case .gBotAllocateClient:
             return allocateBotClient()
@@ -373,7 +402,10 @@ extension ServerMain {
             return 0
 
         case .gEntityContactCapsule:
-            return 0
+            let eccMins = readVec3(vm: vm, addr: args[1])
+            let eccMaxs = readVec3(vm: vm, addr: args[2])
+            let eccEntNum = Int(vm.readInt32(fromData: Int(args[3])))
+            return entityContact(mins: eccMins, maxs: eccMaxs, entNum: eccEntNum) ? 1 : 0
 
         case .gFSSeek:
             let handle = args[1]
@@ -385,6 +417,21 @@ extension ServerMain {
             Q3Console.shared.warning("Unhandled game syscall: \(import_)")
             return 0
         }
+    }
+
+    // MARK: - Entity Contact Test
+
+    /// Test if a world-space box (mins, maxs) overlaps the given entity's bounds.
+    /// Used by G_TouchTriggers in the game VM to detect trigger contacts.
+    private func entityContact(mins: Vec3, maxs: Vec3, entNum: Int) -> Bool {
+        guard entNum >= 0 && entNum < gentities.count else { return false }
+        let ent = gentities[entNum]
+        guard ent.r.linked else { return false }
+
+        // AABB overlap test
+        return mins.x <= ent.r.absmax.x && maxs.x >= ent.r.absmin.x &&
+               mins.y <= ent.r.absmax.y && maxs.y >= ent.r.absmin.y &&
+               mins.z <= ent.r.absmax.z && maxs.z >= ent.r.absmin.z
     }
 
     // MARK: - Syscall Helpers
@@ -432,8 +479,37 @@ extension ServerMain {
     private func setBrushModel(vm: QVM, entAddr: Int32, modelName: String) {
         // Parse "*N" model name
         guard modelName.hasPrefix("*"), let modelNum = Int(modelName.dropFirst()) else { return }
-        // For now, just store the model index
-        Q3Console.shared.print("SetBrushModel: entity at \(entAddr) = model \(modelNum)")
+
+        // Get inline model bounds from BSP
+        guard let bounds = CollisionModel.shared.inlineModelBounds(modelNum) else {
+            Q3Console.shared.warning("SetBrushModel: no bounds for inline model \(modelNum)")
+            return
+        }
+
+        // Write modelindex to entityState_t (offset 160)
+        vm.writeInt32(toData: Int(entAddr) + 160, value: Int32(modelNum))
+
+        // Write to entityShared_t (starts at entAddr + 208)
+        let sharedBase = Int(entAddr) + 208
+
+        // bmodel = 1 (offset 16)
+        vm.writeInt32(toData: sharedBase + 16, value: 1)
+
+        // mins (offset 20, 3 floats)
+        vm.writeInt32(toData: sharedBase + 20, value: Int32(bitPattern: bounds.mins.x.bitPattern))
+        vm.writeInt32(toData: sharedBase + 24, value: Int32(bitPattern: bounds.mins.y.bitPattern))
+        vm.writeInt32(toData: sharedBase + 28, value: Int32(bitPattern: bounds.mins.z.bitPattern))
+
+        // maxs (offset 32, 3 floats)
+        vm.writeInt32(toData: sharedBase + 32, value: Int32(bitPattern: bounds.maxs.x.bitPattern))
+        vm.writeInt32(toData: sharedBase + 36, value: Int32(bitPattern: bounds.maxs.y.bitPattern))
+        vm.writeInt32(toData: sharedBase + 40, value: Int32(bitPattern: bounds.maxs.z.bitPattern))
+
+        // contents = -1 (CONTENTS_SOLID default, game will override)
+        vm.writeInt32(toData: sharedBase + 44, value: -1)
+
+        // Link entity so absmin/absmax get computed and it enters world sectors
+        ServerWorld.shared.linkEntity(vm: vm, entAddr: entAddr)
     }
 
     private func performTrace(vm: QVM, resultAddr: Int32, startAddr: Int32,

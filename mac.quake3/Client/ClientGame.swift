@@ -125,8 +125,14 @@ extension ClientMain {
 
         case .cgAddCommand:
             let cmdName = vm.readString(at: args[1])
-            Q3CommandBuffer.shared.addCommand(cmdName) {
-                // Forward to cgame
+            Q3CommandBuffer.shared.addCommand(cmdName) { [weak self] in
+                guard let cgvm = self?.cgameVM else { return }
+                // DEBUG: log command dispatch
+                let argc = Q3CommandBuffer.shared.argc
+                let fullCmd = (0..<argc).map { Q3CommandBuffer.shared.commandArgv($0) }.joined(separator: " ")
+                Q3Console.shared.print("[CMD-DBG] cgame cmd: '\(fullCmd)' (argc=\(argc))")
+                let result = QVMInterpreter.call(cgvm, command: CGExport.cgConsoleCommand.rawValue)
+                Q3Console.shared.print("[CMD-DBG] CG_ConsoleCommand returned \(result)")
             }
             return 0
 
@@ -260,6 +266,31 @@ extension ClientMain {
             return 0
 
         case .cgRLerpTag:
+            // trap_R_LerpTag(orientation_t *tag, qhandle_t model, int startFrame, int endFrame,
+            //                float frac, const char *tagName)
+            // args: [1]=dest orientation_t, [2]=model handle, [3]=startFrame, [4]=endFrame,
+            //        [5]=frac (float), [6]=tagName
+            let modelHandle = args[2]
+            let startFrame = Int(args[3])
+            let endFrame = Int(args[4])
+            let backlerp = Float(bitPattern: UInt32(bitPattern: args[5]))
+            let tagName = vm.readString(at: args[6])
+
+            guard let modelPath = rendererAPI?.modelNames[modelHandle],
+                  let model = ModelCache.shared.loadModel(modelPath),
+                  let tag = model.lerpTag(named: tagName, frame: startFrame, oldFrame: endFrame, backlerp: backlerp) else {
+                // Write identity orientation
+                let a = Int(args[1])
+                for i in 0..<12 { vm.writeInt32(toData: a + i * 4, value: 0) }
+                return -1
+            }
+
+            // Write orientation_t: origin(12) + axis[3](36) = 48 bytes
+            let a = Int(args[1])
+            ServerMain.shared.writeVec3(vm: vm, addr: Int32(a), vec: tag.origin)
+            ServerMain.shared.writeVec3(vm: vm, addr: Int32(a + 12), vec: tag.axis.0)
+            ServerMain.shared.writeVec3(vm: vm, addr: Int32(a + 24), vec: tag.axis.1)
+            ServerMain.shared.writeVec3(vm: vm, addr: Int32(a + 36), vec: tag.axis.2)
             return 0
 
         // MARK: - Game State
@@ -297,6 +328,10 @@ extension ClientMain {
         case .cgSetUserCmdValue:
             let weaponValue = args[1]
             let sensitivity = Float(bitPattern: UInt32(bitPattern: args[2]))
+            // DEBUG: log weapon changes
+            if weaponValue != cgameUserCmdValue {
+                Q3Console.shared.print("[WEAPON-DBG] cgSetUserCmdValue: \(cgameUserCmdValue) → \(weaponValue)")
+            }
             setUserCmdValue(weaponValue, sensitivity)
             return 0
 
@@ -433,7 +468,19 @@ extension ClientMain {
 
         // MARK: - Additional entries
         case .cgCmMarkFragments:
-            return 0
+            // int trap_CM_MarkFragments(int numPoints, const vec3_t *points,
+            //     const vec3_t projection, int maxPoints, vec3_t pointBuffer,
+            //     int maxFragments, markFragment_t *fragmentBuffer)
+            return CollisionModel.shared.markFragments(
+                vm: vm,
+                numPoints: Int(args[1]),
+                pointsAddr: args[2],
+                projectionAddr: args[3],
+                maxPoints: Int(args[4]),
+                pointBufferAddr: args[5],
+                maxFragments: Int(args[6]),
+                fragmentBufferAddr: args[7]
+            )
 
         case .cgRLoadWorldMap:
             // Map already loaded by renderer
@@ -552,6 +599,17 @@ extension ClientMain {
         let snapIdx = Int(snapshotNumber) & 31
         let snap = snapshots[snapIdx]
         guard snap.valid else { return false }
+
+        // Periodic debug: log player state weapon info
+        snapDebugCounter += 1
+        if snapDebugCounter % 300 == 1 {
+            let statWeapons = snap.ps.stats[2]  // STAT_WEAPONS
+            let curWeapon = snap.ps.weapon
+            let weapState = snap.ps.weaponstate
+            let ammos = (0..<min(10, MAX_WEAPONS)).map { "\($0):\(snap.ps.ammo[$0])" }.joined(separator: " ")
+            Q3Console.shared.print("[SNAP-CG] STAT_WEAPONS=0x\(String(statWeapons, radix: 16)) weapon=\(curWeapon) weapState=\(weapState) ammo=[\(ammos)]")
+            Q3Console.shared.print("[SNAP-CG] torsoAnim=\(snap.ps.torsoAnim) legsAnim=\(snap.ps.legsAnim) eFlags=\(snap.ps.eFlags) numEnts=\(snap.numEntities)")
+        }
 
         let a = Int(snapshotAddr)
 

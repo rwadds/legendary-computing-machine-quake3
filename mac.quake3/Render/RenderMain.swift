@@ -366,6 +366,17 @@ class RenderMain: NSObject, MTKViewDelegate {
             let pitch = asin(-forward.z) * (180.0 / .pi)
             let yaw = atan2(forward.y, forward.x) * (180.0 / .pi)
             cameraAngles = Vec3(pitch, yaw, 0)
+
+            // Update projection from refdef fov (cgame may change fov per frame)
+            if refdef.fovX > 1 && refdef.fovY > 1 {
+                let fovYRad = refdef.fovY * .pi / 180.0
+                projectionMatrix = matrix_perspective_right_hand(
+                    fovyRadians: fovYRad,
+                    aspectRatio: viewAspect,
+                    nearZ: 4.0,
+                    farZ: 16384.0
+                )
+            }
         } else {
             updateCamera(deltaTime: frameTime)
         }
@@ -489,15 +500,20 @@ class RenderMain: NSObject, MTKViewDelegate {
                         )
                     }
 
-                    // Pass 2: Depth-clear + weapon entities (RF_DEPTHHACK)
+                    // Pass 2: Weapon entities (RF_DEPTHHACK) — use depth range [0, 0.3]
+                    // to ensure weapon always renders in front of world geometry.
+                    // Matches ioquake3's GL_DepthRange(0, 0.3) approach.
                     if !weaponEnts.isEmpty {
-                        // Draw fullscreen triangle to reset depth buffer to 1.0
-                        renderEncoder.setRenderPipelineState(pipelineManager.depthClearPipeline)
-                        renderEncoder.setDepthStencilState(pipelineManager.depthClearDepthState)
-                        renderEncoder.setCullMode(.none)
-                        renderEncoder.drawPrimitives(primitiveType: .triangle, vertexStart: 0, vertexCount: 3)
+                        let vp = view.bounds
+                        let scale = view.layer?.contentsScale ?? 2.0
+                        let w = Double(vp.width * scale)
+                        let h = Double(vp.height * scale)
+                        // Compress weapon depth into [0, 0.3] range
+                        renderEncoder.setViewport(MTLViewport(
+                            originX: 0, originY: 0, width: w, height: h,
+                            znear: 0.0, zfar: 0.3
+                        ))
 
-                        // Render weapon viewmodel — depth tests only against itself
                         RenderEntity.renderEntities(
                             entities: weaponEnts,
                             encoder: renderEncoder,
@@ -516,6 +532,12 @@ class RenderMain: NSObject, MTKViewDelegate {
                             vertexOffsetInOut: &entityVertexOffset,
                             indexOffsetInOut: &entityIndexOffset
                         )
+
+                        // Restore full depth range
+                        renderEncoder.setViewport(MTLViewport(
+                            originX: 0, originY: 0, width: w, height: h,
+                            znear: 0.0, zfar: 1.0
+                        ))
                     }
                 }
 

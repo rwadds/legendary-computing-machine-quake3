@@ -51,6 +51,10 @@ class ServerMain {
     // Snapshot counter
     var snapshotCounter: Int32 = 0
 
+    // Debug counters
+    var entitiesInBoxCallCount: Int = 0
+    var entityContactCallCount: Int = 0
+
     // Game VM
     var gameVM: QVM?
 

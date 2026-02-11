@@ -11,6 +11,11 @@ class GameViewController: NSViewController {
     // Track which keys are pressed
     private var keysDown: Set<UInt16> = []
 
+    // Mouse capture state
+    private var mouseCaptured = false
+    private var cursorHidden = false
+    private var appIsActive = true
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
@@ -63,30 +68,70 @@ class GameViewController: NSViewController {
         setupInput()
     }
 
-    private var cursorHidden = false
+    // MARK: - Mouse Capture
 
-    /// Update cursor visibility — hide OS cursor whenever app has focus (Q3 draws its own)
-    func updateCursorState() {
-        let shouldHide = uiActive || (renderMain?.gameActive == true)
-        if shouldHide && !cursorHidden {
+    /// Capture the mouse: hide cursor, lock to window center, enable delta mode
+    func captureMouse() {
+        guard !mouseCaptured else { return }
+        mouseCaptured = true
+        if !cursorHidden {
             NSCursor.hide()
-            if !uiActive {
-                CGAssociateMouseAndMouseCursorPosition(0)
-            }
             cursorHidden = true
-        } else if !shouldHide && cursorHidden {
+        }
+        warpCursorToWindowCenter()
+        CGAssociateMouseAndMouseCursorPosition(0)
+    }
+
+    /// Release the mouse: show cursor, unlock
+    func releaseMouse() {
+        guard mouseCaptured else { return }
+        mouseCaptured = false
+        CGAssociateMouseAndMouseCursorPosition(1)
+        if cursorHidden {
             NSCursor.unhide()
-            CGAssociateMouseAndMouseCursorPosition(1)
             cursorHidden = false
+        }
+    }
+
+    /// Warp the OS cursor to the center of the game window so it can't drift to screen edges
+    private func warpCursorToWindowCenter() {
+        guard let window = view.window, let screen = window.screen else { return }
+        let windowFrame = window.frame
+        let centerX = windowFrame.midX
+        // macOS screen coords: origin bottom-left; CGWarp uses top-left origin
+        let centerY = screen.frame.height - windowFrame.midY
+        CGWarpMouseCursorPosition(CGPoint(x: centerX, y: centerY))
+    }
+
+    /// Update cursor visibility and capture state based on game mode
+    func updateCursorState() {
+        guard appIsActive else { return }
+        let inGame = !uiActive && (renderMain?.gameActive == true)
+        if inGame {
+            // Gameplay: fully captured
+            if !mouseCaptured { captureMouse() }
+        } else if uiActive {
+            // UI menu: hidden cursor but free to move (Q3 draws its own cursor)
+            if mouseCaptured {
+                // Release delta lock but keep cursor hidden
+                CGAssociateMouseAndMouseCursorPosition(1)
+                mouseCaptured = false
+            }
+            if !cursorHidden {
+                NSCursor.hide()
+                cursorHidden = true
+            }
+        } else {
+            // Neither game nor UI active — release everything
+            releaseMouse()
         }
     }
 
     // MARK: - Input Handling
 
     private func setupInput() {
-        // Enable mouse tracking
         // Monitor mouse/flags events; key events handled via responder chain overrides
-        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .flagsChanged]) { [weak self] event in
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .flagsChanged]) { [weak self] event in
             self?.handleEvent(event)
             return event
         }
@@ -95,22 +140,42 @@ class GameViewController: NSViewController {
         if let window = view.window {
             window.acceptsMouseMovedEvents = true
         }
+
+        // Watch for app activation changes to release/re-capture mouse
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(appDidBecomeActive), name: NSApplication.didBecomeActiveNotification, object: nil)
+        nc.addObserver(self, selector: #selector(appDidResignActive), name: NSApplication.didResignActiveNotification, object: nil)
+    }
+
+    @objc private func appDidBecomeActive() {
+        appIsActive = true
+        view.window?.makeFirstResponder(self)
+        updateCursorState()
+    }
+
+    @objc private func appDidResignActive() {
+        appIsActive = false
+        // Release mouse so user can interact with other apps
+        if mouseCaptured {
+            CGAssociateMouseAndMouseCursorPosition(1)
+            mouseCaptured = false
+        }
+        if cursorHidden {
+            NSCursor.unhide()
+            cursorHidden = false
+        }
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.acceptsMouseMovedEvents = true
-        // Make view controller first responder so keyDown reaches us, not the MTKView
         view.window?.makeFirstResponder(self)
-
-        // Hide OS cursor — Q3 draws its own cursor (reticle) in menus
         updateCursorState()
     }
 
     override func viewWillDisappear() {
         super.viewWillDisappear()
-        NSCursor.unhide()
-        CGAssociateMouseAndMouseCursorPosition(1)
+        releaseMouse()
     }
 
     /// Whether the UI is currently catching input
@@ -165,25 +230,29 @@ class GameViewController: NSViewController {
             keysDown.insert(event.keyCode)
             updateMovement()
             ClientInput.shared.keyDown(event.keyCode)
+            // Toggle console with tilde/backtick
+            if event.keyCode == 50 { // backtick key
+                Q3Console.shared.isOpen = !Q3Console.shared.isOpen
+            } else {
+                // Route through binding system
+                let q3Key = macKeyToQ3(event.keyCode)
+                ClientMain.shared.keyEvent(q3Key, down: true)
+            }
         case .keyUp:
             keysDown.remove(event.keyCode)
             updateMovement()
             ClientInput.shared.keyUp(event.keyCode)
-            // Toggle console with tilde/backtick
-            if event.keyCode == 50 { // backtick key
-                Q3Console.shared.isOpen = !Q3Console.shared.isOpen
-            }
-            // ESC opens in-game menu
-            if event.keyCode == 53 { // Escape
-                ClientUI.shared.setActiveMenu(.ingame)
-                ClientUI.shared.keyCatcher |= 2  // KEYCATCH_UI
-                NSCursor.unhide()
-                CGAssociateMouseAndMouseCursorPosition(1)
-            }
-        case .mouseMoved, .leftMouseDragged, .rightMouseDragged:
+            // Route through binding system
+            let q3Key = macKeyToQ3(event.keyCode)
+            ClientMain.shared.keyEvent(q3Key, down: false)
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             renderMain?.mouseDeltaX += Float(event.deltaX)
             renderMain?.mouseDeltaY += Float(event.deltaY)
             ClientInput.shared.mouseMove(dx: Float(event.deltaX), dy: Float(event.deltaY))
+            // Re-warp cursor to center so it never reaches screen edges
+            if mouseCaptured {
+                warpCursorToWindowCenter()
+            }
         default:
             break
         }
@@ -220,13 +289,10 @@ class GameViewController: NSViewController {
 
     override func mouseDown(with event: NSEvent) {
         if uiActive {
-            // Send mouse click to UI
             ClientUI.shared.keyEvent(178, down: true)  // K_MOUSE1 down
         } else {
-            // Re-capture mouse on click
-            NSCursor.hide()
-            CGAssociateMouseAndMouseCursorPosition(0)
-            ClientInput.shared.keyDown(46)
+            if !mouseCaptured { captureMouse() }
+            ClientMain.shared.keyEvent(178, down: true)  // K_MOUSE1 → binding → +attack
         }
     }
 
@@ -234,7 +300,24 @@ class GameViewController: NSViewController {
         if uiActive {
             ClientUI.shared.keyEvent(178, down: false)  // K_MOUSE1 up
         } else {
-            ClientInput.shared.keyUp(46)
+            ClientMain.shared.keyEvent(178, down: false)  // K_MOUSE1 → binding → -attack
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        if uiActive {
+            ClientUI.shared.keyEvent(179, down: true)  // K_MOUSE2 down
+        } else {
+            if !mouseCaptured { captureMouse() }
+            ClientMain.shared.keyEvent(179, down: true)  // K_MOUSE2
+        }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if uiActive {
+            ClientUI.shared.keyEvent(179, down: false)  // K_MOUSE2 up
+        } else {
+            ClientMain.shared.keyEvent(179, down: false)  // K_MOUSE2
         }
     }
 
@@ -251,9 +334,9 @@ class GameViewController: NSViewController {
         case 125: return 133   // Down → K_DOWNARROW
         case 123: return 134   // Left → K_LEFTARROW
         case 124: return 135   // Right → K_RIGHTARROW
-        case 56: return 159    // Left Shift → K_SHIFT
-        case 59: return 157    // Left Control → K_CTRL
-        case 58: return 158    // Left Alt → K_ALT
+        case 56: return 138    // Left Shift → K_SHIFT
+        case 59: return 137    // Left Control → K_CTRL
+        case 58: return 136    // Left Alt → K_ALT
         case 50: return 96     // Backtick → `
         // Letter keys (a-z)
         case 0: return 97      // A

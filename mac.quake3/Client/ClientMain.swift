@@ -42,6 +42,9 @@ class ClientMain {
     var frameTime: Int32 = 0
     var realTime: Int32 = 0
 
+    // Debug counters
+    var snapDebugCounter: Int = 0
+
     // Network channel
     var netchan: NetChannel = NetChannel()
 
@@ -62,7 +65,40 @@ class ClientMain {
 
     func initialize() {
         state = .disconnected
+        ClientInput.shared.registerCommands()
         Q3Console.shared.print("Client initialized")
+    }
+
+    // MARK: - Key Event Processing
+
+    /// Route a key event through keyCatcher and binding system (like CL_KeyEvent in Q3)
+    func keyEvent(_ q3Key: Int32, down: Bool) {
+        // Update key states for trap_Key_IsDown
+        ClientUI.shared.keyStates[Int(q3Key)] = down
+
+        let catcher = ClientUI.shared.keyCatcher
+
+        // KEYCATCH_CGAME (8) — forward to cgame VM
+        if catcher & 8 != 0 {
+            if let cgvm = cgameVM {
+                _ = QVMInterpreter.call(cgvm, command: CGExport.cgKeyEvent.rawValue,
+                                        args: [q3Key, down ? 1 : 0])
+            }
+            return
+        }
+
+        // Normal gameplay: process key bindings
+        guard let binding = ClientUI.shared.keyBindings[Int(q3Key)], !binding.isEmpty else { return }
+
+        if binding.hasPrefix("+") {
+            if down {
+                Q3CommandBuffer.shared.addText(binding + "\n")
+            } else {
+                Q3CommandBuffer.shared.addText("-" + String(binding.dropFirst()) + "\n")
+            }
+        } else if down {
+            Q3CommandBuffer.shared.addText(binding + "\n")
+        }
     }
 
     // MARK: - Connect to Local Server

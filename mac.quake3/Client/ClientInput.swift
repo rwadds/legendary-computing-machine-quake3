@@ -17,7 +17,29 @@ class ClientInput {
     // Movement speed
     let moveSpeed: Int8 = 127
 
+    // Active +/- action commands (from key bindings)
+    var activeActions: Set<String> = []
+
+    private var commandsRegistered = false
+
     private init() {}
+
+    /// Register +/- action commands (called once from ClientMain.initialize)
+    func registerCommands() {
+        guard !commandsRegistered else { return }
+        commandsRegistered = true
+
+        let cb = Q3CommandBuffer.shared
+        let actions = ["attack", "back", "forward", "moveleft", "moveright",
+                       "moveup", "movedown", "left", "right", "speed",
+                       "strafe", "lookup", "lookdown", "button0", "button1",
+                       "button2", "scores", "zoom"]
+        for action in actions {
+            let name = action
+            cb.addCommand("+\(name)") { ClientInput.shared.activeActions.insert(name) }
+            cb.addCommand("-\(name)") { ClientInput.shared.activeActions.remove(name) }
+        }
+    }
 
     // MARK: - Create New Commands
 
@@ -66,7 +88,7 @@ class ClientInput {
 
         let speed = Int(moveSpeed)
 
-        // WASD
+        // WASD (direct macOS key codes — always work regardless of bindings)
         if keysDown.contains(13) || keysDown.contains(126) { forward += speed }  // W or Up
         if keysDown.contains(1) || keysDown.contains(125) { forward -= speed }   // S or Down
         if keysDown.contains(0) || keysDown.contains(123) { side -= speed }      // A or Left
@@ -74,8 +96,18 @@ class ClientInput {
         if keysDown.contains(49) { up += speed }                                   // Space
         if keysDown.contains(56) { up -= speed }                                   // Shift
 
-        // Attack
-        if keysDown.contains(46) { cmd.buttons |= Int32(BUTTON_ATTACK) }         // M key (temp)
+        // +/- actions from key bindings
+        if activeActions.contains("forward") { forward += speed }
+        if activeActions.contains("back") { forward -= speed }
+        if activeActions.contains("moveleft") { side -= speed }
+        if activeActions.contains("moveright") { side += speed }
+        if activeActions.contains("moveup") { up += speed }
+        if activeActions.contains("movedown") { up -= speed }
+
+        // Attack (from +attack binding, e.g. mouse1)
+        if activeActions.contains("attack") || activeActions.contains("button0") {
+            cmd.buttons |= Int32(BUTTON_ATTACK)
+        }
 
         cmd.forwardmove = clampChar(forward)
         cmd.rightmove = clampChar(side)

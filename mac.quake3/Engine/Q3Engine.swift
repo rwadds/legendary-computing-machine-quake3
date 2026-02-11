@@ -136,11 +136,17 @@ class Q3Engine {
         // Initialize file system
         fileSystem.initialize()
 
+        // Register +/- action commands before configs so bindings work
+        ClientInput.shared.registerCommands()
+
         // Execute default config
         commandBuffer.addText("exec default.cfg\n")
         commandBuffer.addText("exec q3config.cfg\n")
         commandBuffer.addText("exec autoexec.cfg\n")
         commandBuffer.executeBuffer()
+
+        // Apply default bindings for any keys not set by configs
+        commandBuffer.setupDefaultBindings()
 
         engineStartTime = ProcessInfo.processInfo.systemUptime
 
@@ -162,6 +168,19 @@ class Q3Engine {
                 Q3CVar.shared.set("sv_pure", value: "0", force: true)
                 Q3CVar.shared.set("sv_maxclients", value: "8", force: true)
                 self?.startMap(mapName)
+            }
+        }
+
+        // Register togglemenu command (ESC key binding target)
+        Q3CommandBuffer.shared.addCommand("togglemenu") {
+            let ui = ClientUI.shared
+            if ui.keyCatcher & 2 != 0 {
+                // UI is open — close it
+                ui.keyCatcher &= ~2
+            } else {
+                // UI is closed — open in-game menu
+                ui.setActiveMenu(.ingame)
+                ui.keyCatcher |= 2
             }
         }
 

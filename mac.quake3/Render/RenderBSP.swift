@@ -16,7 +16,7 @@ class RenderBSP {
     // Stage uniform buffer (triple-buffered, per-draw-call offsets)
     var stageUniformBuffer: MTLBuffer?
     let stageUniformAlignment = 256  // Align to 256 bytes for GPU
-    let maxDrawCallsPerFrame = 4096
+    let maxDrawCallsPerFrame = 16384
     var stageUniformDrawIndex = 0    // Reset each frame, incremented per draw
 
     // Sky renderer
@@ -303,7 +303,10 @@ class RenderBSP {
             // Write stage uniforms to a unique buffer slot for this draw call
             if let uniformBuf = stageUniformBuffer {
                 let offset = stageUniformDrawIndex * stageUniformAlignment
-                guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else { continue }
+                guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else {
+                    Q3Console.shared.warning("BSP stage uniform overflow at draw \(stageUniformDrawIndex)")
+                    continue
+                }
                 let ptr = (uniformBuf.contents() + offset).bindMemory(to: Q3StageUniforms.self, capacity: 1)
                 ptr.pointee = stageUniforms
                 fragmentTable.setAddress(uniformBuf.gpuAddress + UInt64(offset), index: BufferIndex.stageUniforms.rawValue)

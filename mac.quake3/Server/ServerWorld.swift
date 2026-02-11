@@ -10,6 +10,7 @@ class ServerWorld {
 
     // MARK: - Link Entity
 
+    private var linkDebugCount: Int = 0
     func linkEntity(vm: QVM, entAddr: Int32) {
         let sv = ServerMain.shared
 
@@ -24,10 +25,8 @@ class ServerWorld {
 
         // Read shared entity data from VM memory
         // The entityShared_t follows entityState_t in the gentity structure
-        // We need to know the offset to the 'r' (shared) part
-        // In Q3, sharedEntity_t has: entityState_t s; entityShared_t r;
+        // In Q3, gentity_t has: entityState_t s; entityShared_t r; (then game-private fields)
         // entityState_t is 208 bytes (Q3 reference layout)
-        // For simplicity, we update our local copy
 
         var ent = sv.gentities[entNum]
         ent.r.linked = true
@@ -47,6 +46,13 @@ class ServerWorld {
         ent.r.currentOrigin = sv.readVec3(vm: vm, addr: sharedBase + 72)
         ent.r.currentAngles = sv.readVec3(vm: vm, addr: sharedBase + 84)
         ent.r.ownerNum = vm.readInt32(fromData: Int(sharedBase) + 96)
+
+        // DEBUG: log entity linking details for first 50 calls and any trigger entities
+        linkDebugCount += 1
+        let isTrigger = ent.r.contents & 0x40000000 != 0  // CONTENTS_TRIGGER
+        if linkDebugCount <= 50 || isTrigger {
+            Q3Console.shared.print("[LINK-DBG] ent#\(entNum) addr=\(entAddr) sharedBase=\(sharedBase) origin=\(ent.r.currentOrigin) mins=\(ent.r.mins) maxs=\(ent.r.maxs) contents=0x\(String(ent.r.contents, radix: 16)) eType=\(ent.s.eType)")
+        }
 
         // Calculate absmin/absmax
         ent.r.absmin = ent.r.currentOrigin + ent.r.mins - Vec3(1, 1, 1)
