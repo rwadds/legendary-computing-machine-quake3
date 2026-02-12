@@ -281,22 +281,21 @@ extension ServerMain {
             let maxCount = Int(args[4])
             let count = ServerWorld.shared.entitiesInBox(mins: mins, maxs: maxs,
                                                          listAddr: listAddr, maxCount: maxCount, vm: vm)
-            // DEBUG: periodic log of EntitiesInBox results
-            entitiesInBoxCallCount += 1
-            if entitiesInBoxCallCount % 600 == 1 {
-                // Also count linked entities with CONTENTS_TRIGGER
-                var triggerCount = 0
-                var totalLinked = 0
-                for i in 0..<numEntities {
-                    guard i < gentities.count else { break }
-                    if gentities[i].r.linked {
-                        totalLinked += 1
-                        if gentities[i].r.contents & 0x40000000 != 0 { // CONTENTS_TRIGGER
-                            triggerCount += 1
-                        }
+            // DEBUG: log G_TouchTriggers-like queries (box size ~80x80x104)
+            let boxSize = maxs - mins
+            if boxSize.x > 70 && boxSize.x < 90 && boxSize.z > 90 && boxSize.z < 120 {
+                eibTouchTriggersCount += 1
+                if eibTouchTriggersCount <= 20 || eibTouchTriggersCount % 200 == 0 {
+                    var entTypes: [Int32: Int] = [:]
+                    for i in 0..<count {
+                        let entIdx = vm.readInt32(fromData: Int(listAddr) + i * 4)
+                        let entAddr = gentitiesBaseAddr + entIdx * Int32(gentitySize)
+                        let eType = vm.readInt32(fromData: Int(entAddr) + 4)  // entityState_t.eType at offset 4
+                        entTypes[eType, default: 0] += 1
                     }
+                    let center = (mins + maxs) * 0.5
+                    Q3Console.shared.print("[EIB-TOUCH] #\(eibTouchTriggersCount) center=\(center) found=\(count) types=\(entTypes)")
                 }
-                Q3Console.shared.print("[EIB-DBG] query mins=\(mins) maxs=\(maxs) → \(count) found (linked=\(totalLinked) triggers=\(triggerCount))")
             }
             return Int32(count)
 
@@ -307,13 +306,6 @@ extension ServerMain {
             // args[3] is a gentity_t pointer in VM; first field (entityState_t.number) is the entity index
             let ecEntNum = Int(vm.readInt32(fromData: Int(args[3])))
             let contact = entityContact(mins: ecMins, maxs: ecMaxs, entNum: ecEntNum)
-            // DEBUG: log entity contact checks
-            entityContactCallCount += 1
-            if entityContactCallCount % 600 == 1 {
-                let entType = ecEntNum < gentities.count ? gentities[ecEntNum].s.eType : -1
-                let entContents = ecEntNum < gentities.count ? gentities[ecEntNum].r.contents : 0
-                Q3Console.shared.print("[EC-DBG] contact ent#\(ecEntNum) type=\(entType) contents=0x\(String(entContents, radix: 16)) → \(contact)")
-            }
             return contact ? 1 : 0
 
         case .gBotAllocateClient:
@@ -489,8 +481,8 @@ extension ServerMain {
         // Write modelindex to entityState_t (offset 160)
         vm.writeInt32(toData: Int(entAddr) + 160, value: Int32(modelNum))
 
-        // Write to entityShared_t (starts at entAddr + 208)
-        let sharedBase = Int(entAddr) + 208
+        // Write to entityShared_t (starts at entAddr + 416 in QVM gentity_t)
+        let sharedBase = Int(entAddr) + 416
 
         // bmodel = 1 (offset 16)
         vm.writeInt32(toData: sharedBase + 16, value: 1)

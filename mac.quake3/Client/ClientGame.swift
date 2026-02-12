@@ -127,12 +127,13 @@ extension ClientMain {
             let cmdName = vm.readString(at: args[1])
             Q3CommandBuffer.shared.addCommand(cmdName) { [weak self] in
                 guard let cgvm = self?.cgameVM else { return }
-                // DEBUG: log command dispatch
-                let argc = Q3CommandBuffer.shared.argc
-                let fullCmd = (0..<argc).map { Q3CommandBuffer.shared.commandArgv($0) }.joined(separator: " ")
-                Q3Console.shared.print("[CMD-DBG] cgame cmd: '\(fullCmd)' (argc=\(argc))")
                 let result = QVMInterpreter.call(cgvm, command: CGExport.cgConsoleCommand.rawValue)
-                Q3Console.shared.print("[CMD-DBG] CG_ConsoleCommand returned \(result)")
+                // If cgame didn't handle it, fall through to game VM (like Q3's CL_ForwardCommandToServer)
+                if result == 0 {
+                    if let gvm = ServerMain.shared.gameVM, ServerMain.shared.state == .game {
+                        _ = QVMInterpreter.call(gvm, command: GameExport.gameConsoleCommand.rawValue)
+                    }
+                }
             }
             return 0
 
@@ -307,6 +308,9 @@ extension ClientMain {
             let (num, time) = ServerSnapshot.shared.getCurrentSnapshotNumber()
             vm.writeInt32(toData: Int(args[1]), value: num)
             vm.writeInt32(toData: Int(args[2]), value: time)
+            if Q3Engine.shared.frameCount < 10 {
+                Q3Console.shared.print("[SNAP-DBG] f\(Q3Engine.shared.frameCount) getCurrentSnapshotNumber → num=\(num) time=\(time)")
+            }
             return 0
 
         case .cgGetSnapshot:
@@ -328,10 +332,6 @@ extension ClientMain {
         case .cgSetUserCmdValue:
             let weaponValue = args[1]
             let sensitivity = Float(bitPattern: UInt32(bitPattern: args[2]))
-            // DEBUG: log weapon changes
-            if weaponValue != cgameUserCmdValue {
-                Q3Console.shared.print("[WEAPON-DBG] cgSetUserCmdValue: \(cgameUserCmdValue) → \(weaponValue)")
-            }
             setUserCmdValue(weaponValue, sensitivity)
             return 0
 
@@ -598,17 +598,8 @@ extension ClientMain {
     private func getSnapshot(vm: QVM, snapshotNumber: Int32, snapshotAddr: Int32) -> Bool {
         let snapIdx = Int(snapshotNumber) & 31
         let snap = snapshots[snapIdx]
-        guard snap.valid else { return false }
-
-        // Periodic debug: log player state weapon info
-        snapDebugCounter += 1
-        if snapDebugCounter % 300 == 1 {
-            let statWeapons = snap.ps.stats[2]  // STAT_WEAPONS
-            let curWeapon = snap.ps.weapon
-            let weapState = snap.ps.weaponstate
-            let ammos = (0..<min(10, MAX_WEAPONS)).map { "\($0):\(snap.ps.ammo[$0])" }.joined(separator: " ")
-            Q3Console.shared.print("[SNAP-CG] STAT_WEAPONS=0x\(String(statWeapons, radix: 16)) weapon=\(curWeapon) weapState=\(weapState) ammo=[\(ammos)]")
-            Q3Console.shared.print("[SNAP-CG] torsoAnim=\(snap.ps.torsoAnim) legsAnim=\(snap.ps.legsAnim) eFlags=\(snap.ps.eFlags) numEnts=\(snap.numEntities)")
+        guard snap.valid else {
+            return false
         }
 
         let a = Int(snapshotAddr)

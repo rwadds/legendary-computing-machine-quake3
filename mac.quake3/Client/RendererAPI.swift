@@ -68,7 +68,6 @@ class RendererAPI {
     var nextSkinHandle: Int32 = 1
 
     // Debug frame counter
-    var debugFrameCount: Int = 0
 
     // Shader handle → texture cache handle mapping for 2D rendering
     var shaderToTexture: [Int32: Int] = [:]
@@ -288,20 +287,6 @@ class RendererAPI {
             weaponRefdef = refdef
         }
 
-        // Periodic debug: dump entity breakdown
-        debugFrameCount += 1
-        if debugFrameCount % 300 == 1 {
-            let worldCount = worldEntities.count
-            let weapCount = weaponEntities.count
-            let depthHackInWorld = worldEntities.filter { $0.renderfx & 8 != 0 }.count
-            let depthHackInWeap = weaponEntities.filter { $0.renderfx & 8 != 0 }.count
-            Q3Console.shared.print("[RENDER-DBG] rdflags=\(rdflags) scene=\(sceneEntities.count) world=\(worldCount)(DH:\(depthHackInWorld)) weap=\(weapCount)(DH:\(depthHackInWeap))")
-            // Dump first few entities
-            for (i, ent) in sceneEntities.prefix(5).enumerated() {
-                let modelName = modelNames[ent.hModel] ?? "?"
-                Q3Console.shared.print("  ent[\(i)]: type=\(ent.reType) hModel=\(ent.hModel)(\(modelName)) rfx=\(ent.renderfx) origin=\(ent.origin)")
-            }
-        }
     }
 
     /// Called by RenderMain at start of frame to reset per-frame entity lists

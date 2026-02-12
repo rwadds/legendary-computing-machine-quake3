@@ -42,8 +42,6 @@ class ClientMain {
     var frameTime: Int32 = 0
     var realTime: Int32 = 0
 
-    // Debug counters
-    var snapDebugCounter: Int = 0
 
     // Network channel
     var netchan: NetChannel = NetChannel()
@@ -325,6 +323,7 @@ class ClientMain {
 
                 // Update server time
                 serverTime = snapTime
+
             }
         }
     }

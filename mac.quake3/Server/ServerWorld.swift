@@ -36,7 +36,7 @@ class ServerWorld {
         ent.s = sv.readEntityStateFromVM(vm: vm, addr: entAddr)
 
         // Read entityShared_t from VM memory (starts after entityState_t)
-        let sharedBase = entAddr + 208  // entityState_t is 208 bytes
+        let sharedBase = entAddr + 416  // entityShared_t offset in QVM gentity_t (verified empirically)
         ent.r.svFlags = vm.readInt32(fromData: Int(sharedBase) + 8)
         ent.r.singleClient = vm.readInt32(fromData: Int(sharedBase) + 12)
         ent.r.bmodel = vm.readInt32(fromData: Int(sharedBase) + 16) != 0
@@ -47,18 +47,64 @@ class ServerWorld {
         ent.r.currentAngles = sv.readVec3(vm: vm, addr: sharedBase + 84)
         ent.r.ownerNum = vm.readInt32(fromData: Int(sharedBase) + 96)
 
-        // DEBUG: log entity linking details for first 50 calls and any trigger entities
+        // DEBUG: memory scan — find where game VM actually writes entityShared_t fields
         linkDebugCount += 1
-        let isTrigger = ent.r.contents & 0x40000000 != 0  // CONTENTS_TRIGGER
-        if linkDebugCount <= 50 || isTrigger {
-            Q3Console.shared.print("[LINK-DBG] ent#\(entNum) addr=\(entAddr) sharedBase=\(sharedBase) origin=\(ent.r.currentOrigin) mins=\(ent.r.mins) maxs=\(ent.r.maxs) contents=0x\(String(ent.r.contents, radix: 16)) eType=\(ent.s.eType)")
+        if linkDebugCount <= 10 && ent.s.eType >= 1 {
+            // Scan full entity for float -15.0 (0xC1700000) = item mins pattern
+            let neg15pattern = Int32(bitPattern: 0xC1700000)
+            let triggerPattern: Int32 = 0x40000000  // CONTENTS_TRIGGER
+            var neg15offsets: [Int] = []
+            var triggerOffsets: [Int] = []
+            let scanEnd = min(816, sv.gentitySize)
+            for off in stride(from: 0, to: scanEnd, by: 4) {
+                let val = vm.readInt32(fromData: Int(entAddr) + off)
+                if val == neg15pattern { neg15offsets.append(off) }
+                if val == triggerPattern { triggerOffsets.append(off) }
+            }
+            // Also dump all non-zero values in the entityShared_t region (offset 200-400)
+            var nonZeroFields: [(Int, String)] = []
+            for off in stride(from: 200, to: min(400, scanEnd), by: 4) {
+                let val = vm.readInt32(fromData: Int(entAddr) + off)
+                if val != 0 {
+                    let fval = Float(bitPattern: UInt32(bitPattern: val))
+                    nonZeroFields.append((off, "0x\(String(UInt32(bitPattern: val), radix: 16)) f=\(fval)"))
+                }
+            }
+            // Check computed vs expected entity address
+            let expectedAddr = sv.gentitiesBaseAddr + Int32(entNum) * Int32(sv.gentitySize)
+            Q3Console.shared.print("[MEM-SCAN] ent#\(entNum) eType=\(ent.s.eType) addr=\(entAddr) expected=\(expectedAddr) match=\(entAddr == expectedAddr)")
+            Q3Console.shared.print("[MEM-SCAN]   -15.0 found at offsets: \(neg15offsets)")
+            Q3Console.shared.print("[MEM-SCAN]   CONTENTS_TRIGGER at offsets: \(triggerOffsets)")
+            Q3Console.shared.print("[MEM-SCAN]   non-zero in 200-400: \(nonZeroFields)")
+            // Also check if origin value appears elsewhere
+            let originX = vm.readInt32(fromData: Int(entAddr) + 24)  // s.pos.trBase.x
+            if originX != 0 {
+                var originXoffsets: [Int] = []
+                for off in stride(from: 208, to: scanEnd, by: 4) {
+                    if vm.readInt32(fromData: Int(entAddr) + off) == originX { originXoffsets.append(off) }
+                }
+                Q3Console.shared.print("[MEM-SCAN]   trBase.x=0x\(String(UInt32(bitPattern: originX), radix: 16)) also at: \(originXoffsets)")
+            }
         }
 
-        // Calculate absmin/absmax
-        ent.r.absmin = ent.r.currentOrigin + ent.r.mins - Vec3(1, 1, 1)
-        ent.r.absmax = ent.r.currentOrigin + ent.r.maxs + Vec3(1, 1, 1)
+        // Calculate absmin/absmax (matching SV_LinkEntity in ioquake3)
+        if ent.r.bmodel {
+            ent.r.absmin = ent.r.mins - Vec3(1, 1, 1)
+            ent.r.absmax = ent.r.maxs + Vec3(1, 1, 1)
+        } else {
+            ent.r.absmin = ent.r.currentOrigin + ent.r.mins - Vec3(1, 1, 1)
+            ent.r.absmax = ent.r.currentOrigin + ent.r.maxs + Vec3(1, 1, 1)
+        }
 
         sv.gentities[entNum] = ent
+
+        // Write back fields to VM memory that the game code reads directly:
+        // absmin at sharedBase+48, absmax at sharedBase+60, linked at sharedBase+0, linkcount at sharedBase+4
+        let sb = Int(sharedBase)
+        vm.writeInt32(toData: sb + 0, value: 1)                  // linked = qtrue
+        vm.writeInt32(toData: sb + 4, value: Int32(ent.r.linkCount))  // linkcount
+        sv.writeVec3(vm: vm, addr: sharedBase + 48, vec: ent.r.absmin)
+        sv.writeVec3(vm: vm, addr: sharedBase + 60, vec: ent.r.absmax)
 
         // Link into world sector
         linkIntoWorldSector(entNum: entNum)
@@ -73,6 +119,10 @@ class ServerWorld {
         removeFromWorldSector(entNum: entNum)
 
         sv.gentities[entNum].r.linked = false
+
+        // Write linked=false back to VM memory
+        let sharedBase = Int(entAddr) + 416
+        vm.writeInt32(toData: sharedBase + 0, value: 0)  // linked = qfalse
     }
 
     // MARK: - World Sector Operations
@@ -145,6 +195,11 @@ class ServerWorld {
             vm.writeInt32(toData: Int(listAddr) + i * 4, value: result[i])
         }
         return result.count
+    }
+
+    /// Diagnostic version that returns results directly (no VM write)
+    func collectEntitiesForDiag(mins: Vec3, maxs: Vec3, result: inout [Int32]) {
+        collectEntitiesInBox(sectorIdx: 0, mins: mins, maxs: maxs, result: &result, maxCount: MAX_GENTITIES)
     }
 
     private func collectEntitiesInBox(sectorIdx: Int, mins: Vec3, maxs: Vec3,
