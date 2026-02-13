@@ -281,22 +281,6 @@ extension ServerMain {
             let maxCount = Int(args[4])
             let count = ServerWorld.shared.entitiesInBox(mins: mins, maxs: maxs,
                                                          listAddr: listAddr, maxCount: maxCount, vm: vm)
-            // DEBUG: log G_TouchTriggers-like queries (box size ~80x80x104)
-            let boxSize = maxs - mins
-            if boxSize.x > 70 && boxSize.x < 90 && boxSize.z > 90 && boxSize.z < 120 {
-                eibTouchTriggersCount += 1
-                if eibTouchTriggersCount <= 20 || eibTouchTriggersCount % 200 == 0 {
-                    var entTypes: [Int32: Int] = [:]
-                    for i in 0..<count {
-                        let entIdx = vm.readInt32(fromData: Int(listAddr) + i * 4)
-                        let entAddr = gentitiesBaseAddr + entIdx * Int32(gentitySize)
-                        let eType = vm.readInt32(fromData: Int(entAddr) + 4)  // entityState_t.eType at offset 4
-                        entTypes[eType, default: 0] += 1
-                    }
-                    let center = (mins + maxs) * 0.5
-                    Q3Console.shared.print("[EIB-TOUCH] #\(eibTouchTriggersCount) center=\(center) found=\(count) types=\(entTypes)")
-                }
-            }
             return Int32(count)
 
         case .gEntityContact:

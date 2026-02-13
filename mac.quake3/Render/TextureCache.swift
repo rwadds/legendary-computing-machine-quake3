@@ -49,7 +49,13 @@ class TextureCache {
         }
 
         if let tex = imageLoader.loadTexture(named: key) {
-            return addTexture(tex, name: key)
+            let handle = addTexture(tex, name: key)
+            // Also cache under base name (extension stripped) to avoid duplicate loads
+            // when shaders reference the same image with different extensions
+            if baseName != key {
+                textures[baseName] = handle
+            }
+            return handle
         }
 
         return defaultTexture

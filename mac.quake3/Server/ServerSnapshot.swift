@@ -6,9 +6,6 @@ import simd
 class ServerSnapshot {
     static let shared = ServerSnapshot()
 
-    // Debug: track weapon stat changes
-    private var lastStatWeapons: Int32 = 0
-
     // Snapshot entities ring buffer
     private var snapshotEntities: [EntityState] = []
     private var nextSnapshotEntities: Int = 0
@@ -60,20 +57,6 @@ class ServerSnapshot {
         if clientNum < sv.maxClients && sv.gameClientsBaseAddr != 0 && sv.gameClientSize > 0 {
             let psAddr = sv.gameClientsBaseAddr + Int32(clientNum * sv.gameClientSize)
             snap.ps = sv.readPlayerStateFromVM(vm: vm, addr: psAddr)
-
-            // DEBUG: detect STAT_WEAPONS changes
-            let newWeapons = snap.ps.stats[2]
-            if newWeapons != lastStatWeapons {
-                // Also read raw VM memory for verification
-                let rawStatWeapons = vm.readInt32(fromData: Int(psAddr) + 184 + 2 * 4)
-                Q3Console.shared.print("[PICKUP-DBG] STAT_WEAPONS changed: 0x\(String(lastStatWeapons, radix: 16)) → 0x\(String(newWeapons, radix: 16)) (raw=0x\(String(rawStatWeapons, radix: 16))) weapon=\(snap.ps.weapon) ammo=[\(snap.ps.ammo.prefix(10).enumerated().map{"\($0):\($1)"}.joined(separator: " "))]")
-                Q3Console.shared.print("[PICKUP-DBG] psAddr=\(psAddr) gcBase=\(sv.gameClientsBaseAddr) gcSize=\(sv.gameClientSize)")
-                lastStatWeapons = newWeapons
-            }
-            // Also log first 3 snapshots for initial state
-            if sv.snapshotCounter <= 3 {
-                Q3Console.shared.print("[PICKUP-DBG] snap#\(sv.snapshotCounter) STAT_WEAPONS=0x\(String(newWeapons, radix: 16)) weapon=\(snap.ps.weapon) ammo=[\(snap.ps.ammo.prefix(10).enumerated().map{"\($0):\($1)"}.joined(separator: " "))]")
-            }
         }
 
         // Add visible entities — read entity state from VM memory

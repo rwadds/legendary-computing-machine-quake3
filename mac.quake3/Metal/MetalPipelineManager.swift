@@ -93,10 +93,16 @@ class MetalPipelineManager {
             colorAttachment?.blendingState = .enabled
             colorAttachment?.sourceRGBBlendFactor = metalBlendFactor(key.srcBlend, isSrc: true)
             colorAttachment?.destinationRGBBlendFactor = metalBlendFactor(key.dstBlend, isSrc: false)
-            colorAttachment?.sourceAlphaBlendFactor = metalBlendFactor(key.srcBlend, isSrc: true)
-            colorAttachment?.destinationAlphaBlendFactor = metalBlendFactor(key.dstBlend, isSrc: false)
+            // Alpha blend: preserve framebuffer alpha (1.0 from clear) so the
+            // macOS compositor sees fully-opaque pixels.
+            colorAttachment?.sourceAlphaBlendFactor = .zero
+            colorAttachment?.destinationAlphaBlendFactor = .one
             colorAttachment?.rgbBlendOperation = .add
             colorAttachment?.alphaBlendOperation = .add
+        } else {
+            // Opaque pipeline: mask alpha writes to preserve framebuffer alpha (1.0)
+            // so the macOS compositor doesn't make the window transparent.
+            colorAttachment?.writeMask = [.red, .green, .blue]
         }
 
         let pipeline = try compiler.makeRenderPipelineState(descriptor: pipelineDesc)

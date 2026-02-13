@@ -10,23 +10,14 @@ class ServerWorld {
 
     // MARK: - Link Entity
 
-    private var linkDebugCount: Int = 0
     func linkEntity(vm: QVM, entAddr: Int32) {
         let sv = ServerMain.shared
 
-        // Read entity number from VM memory
-        // entityState_t starts at entAddr, first field is number
         let entNum = Int(vm.readInt32(fromData: Int(entAddr)))
         guard entNum >= 0 && entNum < MAX_GENTITIES else { return }
         guard entNum < sv.gentities.count else { return }
 
-        // Unlink first
         unlinkEntity(vm: vm, entAddr: entAddr)
-
-        // Read shared entity data from VM memory
-        // The entityShared_t follows entityState_t in the gentity structure
-        // In Q3, gentity_t has: entityState_t s; entityShared_t r; (then game-private fields)
-        // entityState_t is 208 bytes (Q3 reference layout)
 
         var ent = sv.gentities[entNum]
         ent.r.linked = true
@@ -35,8 +26,8 @@ class ServerWorld {
         // Read entityState_t (208 bytes) from VM memory
         ent.s = sv.readEntityStateFromVM(vm: vm, addr: entAddr)
 
-        // Read entityShared_t from VM memory (starts after entityState_t)
-        let sharedBase = entAddr + 416  // entityShared_t offset in QVM gentity_t (verified empirically)
+        // Read entityShared_t from VM memory (offset 416 in QVM's gentity_t)
+        let sharedBase = entAddr + 416
         ent.r.svFlags = vm.readInt32(fromData: Int(sharedBase) + 8)
         ent.r.singleClient = vm.readInt32(fromData: Int(sharedBase) + 12)
         ent.r.bmodel = vm.readInt32(fromData: Int(sharedBase) + 16) != 0
@@ -46,46 +37,6 @@ class ServerWorld {
         ent.r.currentOrigin = sv.readVec3(vm: vm, addr: sharedBase + 72)
         ent.r.currentAngles = sv.readVec3(vm: vm, addr: sharedBase + 84)
         ent.r.ownerNum = vm.readInt32(fromData: Int(sharedBase) + 96)
-
-        // DEBUG: memory scan — find where game VM actually writes entityShared_t fields
-        linkDebugCount += 1
-        if linkDebugCount <= 10 && ent.s.eType >= 1 {
-            // Scan full entity for float -15.0 (0xC1700000) = item mins pattern
-            let neg15pattern = Int32(bitPattern: 0xC1700000)
-            let triggerPattern: Int32 = 0x40000000  // CONTENTS_TRIGGER
-            var neg15offsets: [Int] = []
-            var triggerOffsets: [Int] = []
-            let scanEnd = min(816, sv.gentitySize)
-            for off in stride(from: 0, to: scanEnd, by: 4) {
-                let val = vm.readInt32(fromData: Int(entAddr) + off)
-                if val == neg15pattern { neg15offsets.append(off) }
-                if val == triggerPattern { triggerOffsets.append(off) }
-            }
-            // Also dump all non-zero values in the entityShared_t region (offset 200-400)
-            var nonZeroFields: [(Int, String)] = []
-            for off in stride(from: 200, to: min(400, scanEnd), by: 4) {
-                let val = vm.readInt32(fromData: Int(entAddr) + off)
-                if val != 0 {
-                    let fval = Float(bitPattern: UInt32(bitPattern: val))
-                    nonZeroFields.append((off, "0x\(String(UInt32(bitPattern: val), radix: 16)) f=\(fval)"))
-                }
-            }
-            // Check computed vs expected entity address
-            let expectedAddr = sv.gentitiesBaseAddr + Int32(entNum) * Int32(sv.gentitySize)
-            Q3Console.shared.print("[MEM-SCAN] ent#\(entNum) eType=\(ent.s.eType) addr=\(entAddr) expected=\(expectedAddr) match=\(entAddr == expectedAddr)")
-            Q3Console.shared.print("[MEM-SCAN]   -15.0 found at offsets: \(neg15offsets)")
-            Q3Console.shared.print("[MEM-SCAN]   CONTENTS_TRIGGER at offsets: \(triggerOffsets)")
-            Q3Console.shared.print("[MEM-SCAN]   non-zero in 200-400: \(nonZeroFields)")
-            // Also check if origin value appears elsewhere
-            let originX = vm.readInt32(fromData: Int(entAddr) + 24)  // s.pos.trBase.x
-            if originX != 0 {
-                var originXoffsets: [Int] = []
-                for off in stride(from: 208, to: scanEnd, by: 4) {
-                    if vm.readInt32(fromData: Int(entAddr) + off) == originX { originXoffsets.append(off) }
-                }
-                Q3Console.shared.print("[MEM-SCAN]   trBase.x=0x\(String(UInt32(bitPattern: originX), radix: 16)) also at: \(originXoffsets)")
-            }
-        }
 
         // Calculate absmin/absmax (matching SV_LinkEntity in ioquake3)
         if ent.r.bmodel {

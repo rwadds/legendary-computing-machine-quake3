@@ -561,6 +561,13 @@ class RenderMain: NSObject, MTKViewDelegate {
 
         renderEncoder.endEncoding()
 
+        // Second residency check — textures loaded during entity/poly rendering
+        // (e.g., projectile models, weapon muzzle flashes) need to be resident
+        // before the GPU processes this command buffer
+        if textureCache.textureCount != lastResidencyTextureCount {
+            updateResidencySet()
+        }
+
         commandBuffer.useResidencySet(residencySet)
         commandBuffer.useResidencySet((view.layer as! CAMetalLayer).residencySet)
         commandBuffer.endCommandBuffer()

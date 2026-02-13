@@ -8,6 +8,16 @@ import MetalKit
 import simd
 
 class RenderEntity {
+    // Per-surface draw info for two-pass rendering (opaques first, then blended)
+    private struct SurfDrawInfo {
+        let baseIndex: Int
+        let numIndices: Int
+        let shaderName: String
+        let shaderDef: Q3ShaderDef?
+        let activeStages: [ShaderStage]
+        let hasBlending: Bool
+    }
+
     // Entity render types (from Q3)
     static let rtModel: Int32 = 0
     static let rtPoly: Int32 = 1
@@ -189,24 +199,24 @@ class RenderEntity {
 
         let frame = max(0, min(Int(entity.frame), model.numFrames - 1))
         let oldFrame = max(0, min(Int(entity.oldframe), model.numFrames - 1))
+        let isDepthHack = (entity.renderfx & rfDepthHack) != 0
 
+        var surfDrawInfos: [SurfDrawInfo] = []
+
+        // --- Pass 1: Build vertices/indices and resolve shaders ---
         for surface in model.surfaces {
             let numVerts = surface.numVerts
             let numTris = surface.numTriangles
             let numIndices = numTris * 3
 
-            // Check buffer capacity
             guard vertexOffset + numVerts <= maxVerts,
                   indexOffset + numIndices <= maxIndices else { continue }
 
-            // Interpolate vertex positions in model space
             let localPositions = interpolateSurface(surface, frame: frame, oldFrame: oldFrame, backlerp: entity.backlerp)
             guard localPositions.count == numVerts else { continue }
 
-            // Interpolate normals in model space
             let localNormals = interpolateNormals(surface, frame: frame, oldFrame: oldFrame, backlerp: entity.backlerp)
 
-            // Build GPU vertices — transform positions and normals to world space on CPU
             let baseVertex = vertexOffset
             for i in 0..<numVerts {
                 let tc: SIMD2<Float>
@@ -216,26 +226,20 @@ class RenderEntity {
                     tc = SIMD2<Float>(0, 0)
                 }
                 let localN: Vec3 = i < localNormals.count ? localNormals[i] : Vec3(0, 0, 1)
-
-                // Transform position: worldPos = modelMatrix * (localPos, 1)
                 let lp = localPositions[i]
                 let worldPos = transformPoint(lp, by: modelMatrix)
-
-                // Transform normal (rotation only, no translation): worldN = mat3x3 * localN
                 let worldN = transformDirection(localN, by: modelMatrix)
 
-                let vert = Q3GPUVertex(
+                vertexPtr[vertexOffset] = Q3GPUVertex(
                     position: worldPos,
                     texCoord: tc,
                     lightmapCoord: SIMD2<Float>(0, 0),
                     normal: worldN,
                     color: entColor
                 )
-                vertexPtr[vertexOffset] = vert
                 vertexOffset += 1
             }
 
-            // Build indices
             let baseIndex = indexOffset
             for tri in surface.triangles {
                 indexPtr[indexOffset] = UInt32(baseVertex) + UInt32(tri.indexes.0)
@@ -244,28 +248,173 @@ class RenderEntity {
                 indexOffset += 3
             }
 
-            // Resolve texture
-            let texHandle: Int
-            if entity.customShader > 0, let shaderName = rendererAPI.shaderNames[entity.customShader] {
-                texHandle = textureCache.findOrLoad(shaderName)
+            // Resolve shader
+            let shaderName: String
+            if entity.customShader > 0, let sn = rendererAPI.shaderNames[entity.customShader] {
+                shaderName = sn
             } else if !surface.shaders.isEmpty {
-                texHandle = textureCache.findOrLoad(surface.shaders[0].name)
+                shaderName = surface.shaders[0].name
             } else {
-                texHandle = textureCache.whiteTexture
+                shaderName = ""
             }
+
+            let shaderDef = shaderName.isEmpty ? nil : ShaderParser.shared.findShader(shaderName)
+            let activeStages = shaderDef?.stages.filter { $0.active } ?? []
+
+            // Detect if any stage uses blending (srcBlend or dstBlend non-zero)
+            let hasBlending: Bool
+            if !activeStages.isEmpty {
+                hasBlending = activeStages.contains { stage in
+                    let src = stage.stateBits & GLState.srcBlendBits.rawValue
+                    let dst = stage.stateBits & GLState.dstBlendBits.rawValue
+                    return src != 0 || dst != 0
+                }
+            } else {
+                hasBlending = false
+            }
+
+            surfDrawInfos.append(SurfDrawInfo(
+                baseIndex: baseIndex,
+                numIndices: numIndices,
+                shaderName: shaderName,
+                shaderDef: shaderDef,
+                activeStages: activeStages,
+                hasBlending: hasBlending
+            ))
+        }
+
+        let time = Float(ProcessInfo.processInfo.systemUptime) - entity.shaderTime
+
+        // --- Pass 2: Draw opaque surfaces first ---
+        for info in surfDrawInfos {
+            guard !info.hasBlending else { continue }
+            drawModelSurface(
+                info: info, entity: entity, entColor: entColor, time: time,
+                isDepthHack: isDepthHack, encoder: encoder,
+                fragmentTable: fragmentTable, entityIndexBuffer: entityIndexBuffer,
+                textureCache: textureCache, pipelineManager: pipelineManager,
+                stageUniformBuffer: stageUniformBuffer,
+                stageUniformDrawIndex: &stageUniformDrawIndex,
+                stageUniformAlignment: stageUniformAlignment, view: view
+            )
+        }
+
+        // --- Pass 3: Draw blended surfaces (additive/alpha) after opaques ---
+        for info in surfDrawInfos {
+            guard info.hasBlending else { continue }
+            drawModelSurface(
+                info: info, entity: entity, entColor: entColor, time: time,
+                isDepthHack: isDepthHack, encoder: encoder,
+                fragmentTable: fragmentTable, entityIndexBuffer: entityIndexBuffer,
+                textureCache: textureCache, pipelineManager: pipelineManager,
+                stageUniformBuffer: stageUniformBuffer,
+                stageUniformDrawIndex: &stageUniformDrawIndex,
+                stageUniformAlignment: stageUniformAlignment, view: view
+            )
+        }
+    }
+
+    /// Draw a single model surface (opaque fallback or multi-stage shader-aware)
+    private static func drawModelSurface(
+        info: SurfDrawInfo,
+        entity: RefEntity,
+        entColor: SIMD4<Float>,
+        time: Float,
+        isDepthHack: Bool,
+        encoder: any MTL4RenderCommandEncoder,
+        fragmentTable: MTL4ArgumentTable,
+        entityIndexBuffer: MTLBuffer,
+        textureCache: TextureCache,
+        pipelineManager: MetalPipelineManager,
+        stageUniformBuffer: MTLBuffer?,
+        stageUniformDrawIndex: inout Int,
+        stageUniformAlignment: Int,
+        view: MTKView
+    ) {
+        let idxByteOffset = info.baseIndex * MemoryLayout<UInt32>.stride
+        let remainingLength = entityIndexBuffer.length - idxByteOffset
+        guard remainingLength > 0 else { return }
+
+        if !info.activeStages.isEmpty {
+            // Shader-aware multi-stage rendering
+            let shaderEval = ShaderEval.shared
+
+            for (stageIdx, stage) in info.activeStages.enumerated() {
+                let stageUniforms = shaderEval.computeStageUniforms(
+                    stage: stage, time: time, entityColor: entColor
+                )
+
+                // Resolve texture from stage bundle
+                let bundle = stage.bundles[0]
+                let texHandle: Int
+                if let firstName = bundle.imageNames.first {
+                    if bundle.imageNames.count > 1 && bundle.imageAnimationSpeed > 0 {
+                        let frameIdx = Int(time * bundle.imageAnimationSpeed) % bundle.imageNames.count
+                        texHandle = textureCache.findOrLoad(bundle.imageNames[frameIdx])
+                    } else {
+                        texHandle = textureCache.findOrLoad(firstName)
+                    }
+                } else {
+                    texHandle = textureCache.findOrLoad(info.shaderName)
+                }
+
+                if let tex = textureCache.getTexture(texHandle) {
+                    fragmentTable.setTexture(tex.gpuResourceID, index: TextureIndex.color.rawValue)
+                }
+
+                // For blended stages, force depth write off (Q3 renders these after opaques)
+                var effectiveBits = stage.stateBits
+                let hasStageBlend = (effectiveBits & GLState.srcBlendBits.rawValue) != 0
+                    || (effectiveBits & GLState.dstBlendBits.rawValue) != 0
+                if hasStageBlend {
+                    effectiveBits &= ~GLState.depthMaskTrue.rawValue
+                }
+
+                let cullType = isDepthHack ? CullType.twoSided : (info.shaderDef?.cullType ?? .frontSided)
+                let key = pipelineManager.pipelineKeyFromStateBits(effectiveBits, cullType: cullType)
+                if let pipeline = try? pipelineManager.getOrCreatePipeline(key: key, view: view) {
+                    encoder.setRenderPipelineState(pipeline)
+                }
+
+                let depthWrite = (effectiveBits & GLState.depthMaskTrue.rawValue) != 0
+                let depthTest = (effectiveBits & GLState.depthTestDisable.rawValue) == 0
+                let depthEqual = (effectiveBits & GLState.depthFuncEqual.rawValue) != 0
+                let depthState = pipelineManager.getDepthState(write: depthWrite, test: depthTest, equal: depthEqual)
+                encoder.setDepthStencilState(depthState)
+                encoder.setCullMode(isDepthHack ? .none : (cullType == .twoSided ? .none : (cullType == .backSided ? .front : .back)))
+
+                // Write stage uniforms
+                if let uniformBuf = stageUniformBuffer {
+                    let offset = stageUniformDrawIndex * stageUniformAlignment
+                    guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else { continue }
+                    let ptr = (uniformBuf.contents() + offset).bindMemory(to: Q3StageUniforms.self, capacity: 1)
+                    ptr.pointee = stageUniforms
+                    fragmentTable.setAddress(uniformBuf.gpuAddress + UInt64(offset), index: BufferIndex.stageUniforms.rawValue)
+                    stageUniformDrawIndex += 1
+                }
+
+                encoder.drawIndexedPrimitives(
+                    primitiveType: .triangle,
+                    indexCount: info.numIndices,
+                    indexType: .uint32,
+                    indexBuffer: entityIndexBuffer.gpuAddress + UInt64(idxByteOffset),
+                    indexBufferLength: remainingLength
+                )
+            }
+        } else {
+            // Fallback: no shader def — use default opaque pipeline
+            let texHandle = info.shaderName.isEmpty
+                ? textureCache.whiteTexture
+                : textureCache.findOrLoad(info.shaderName)
 
             if let tex = textureCache.getTexture(texHandle) {
                 fragmentTable.setTexture(tex.gpuResourceID, index: TextureIndex.color.rawValue)
             }
 
-            // Entity models always use the default opaque pipeline.
-            // Shader-aware blending applies to world BSP surfaces, not MD3 models.
             encoder.setRenderPipelineState(pipelineManager.defaultPipeline)
             encoder.setDepthStencilState(pipelineManager.defaultDepthState)
-            // Weapon viewmodels (RF_DEPTHHACK) often have mirrored axes — disable culling
-            encoder.setCullMode((entity.renderfx & rfDepthHack) != 0 ? .none : .back)
+            encoder.setCullMode(isDepthHack ? .none : .back)
 
-            // Write stage uniforms (default entity rendering)
             writeEntityStageUniforms(
                 fragmentTable: fragmentTable,
                 stageUniformBuffer: stageUniformBuffer,
@@ -274,14 +423,9 @@ class RenderEntity {
                 color: entColor
             )
 
-            // Draw
-            let idxByteOffset = baseIndex * MemoryLayout<UInt32>.stride
-            let remainingLength = entityIndexBuffer.length - idxByteOffset
-            guard remainingLength > 0 else { continue }
-
             encoder.drawIndexedPrimitives(
                 primitiveType: .triangle,
-                indexCount: numIndices,
+                indexCount: info.numIndices,
                 indexType: .uint32,
                 indexBuffer: entityIndexBuffer.gpuAddress + UInt64(idxByteOffset),
                 indexBufferLength: remainingLength
@@ -381,10 +525,23 @@ class RenderEntity {
         indexPtr[indexOffset + 5] = UInt32(baseVertex + 3)
         indexOffset += 6
 
-        // Resolve texture
+        // Resolve shader → texture, blend mode, and uniforms from shader definition
+        let shaderName: String? = entity.customShader > 0
+            ? rendererAPI.shaderNames[entity.customShader] : nil
+        let shaderDef = shaderName != nil ? ShaderParser.shared.findShader(shaderName!) : nil
+        let activeStage = shaderDef?.stages.first(where: { $0.active })
+
         let texHandle: Int
-        if entity.customShader > 0, let shaderName = rendererAPI.shaderNames[entity.customShader] {
-            texHandle = textureCache.findOrLoad(shaderName)
+        if let stage = activeStage, let firstName = stage.bundles[0].imageNames.first {
+            let time = Float(ProcessInfo.processInfo.systemUptime) - entity.shaderTime
+            if stage.bundles[0].imageNames.count > 1 && stage.bundles[0].imageAnimationSpeed > 0 {
+                let frameIdx = Int(time * stage.bundles[0].imageAnimationSpeed) % stage.bundles[0].imageNames.count
+                texHandle = textureCache.findOrLoad(stage.bundles[0].imageNames[frameIdx])
+            } else {
+                texHandle = textureCache.findOrLoad(firstName)
+            }
+        } else if let sn = shaderName {
+            texHandle = textureCache.findOrLoad(sn)
         } else {
             texHandle = textureCache.whiteTexture
         }
@@ -393,30 +550,65 @@ class RenderEntity {
             fragmentTable.setTexture(tex.gpuResourceID, index: TextureIndex.color.rawValue)
         }
 
-        // Alpha-blended pipeline for sprites
-        let key = PipelineKey(
-            srcBlend: 0x05,   // GLS_SRCBLEND_SRC_ALPHA
-            dstBlend: 0x06,   // GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA
-            depthWrite: false,
-            depthTest: true,
-            cullMode: 2,      // two-sided
-            alphaTest: 0
-        )
-        if let pipeline = try? pipelineManager.getOrCreatePipeline(key: key, view: view) {
-            encoder.setRenderPipelineState(pipeline)
-        }
-        let depthState = pipelineManager.getDepthState(write: false, test: true)
-        encoder.setDepthStencilState(depthState)
-        encoder.setCullMode(.none)
+        // Use shader stage blend mode if available, otherwise default alpha blend
+        if let stage = activeStage {
+            var effectiveBits = stage.stateBits
+            // Force depth write off for blended sprites
+            let hasBlend = (effectiveBits & GLState.srcBlendBits.rawValue) != 0
+                || (effectiveBits & GLState.dstBlendBits.rawValue) != 0
+            if hasBlend {
+                effectiveBits &= ~GLState.depthMaskTrue.rawValue
+            }
+            let cullType = shaderDef?.cullType ?? .twoSided
+            let key = pipelineManager.pipelineKeyFromStateBits(effectiveBits, cullType: cullType)
+            if let pipeline = try? pipelineManager.getOrCreatePipeline(key: key, view: view) {
+                encoder.setRenderPipelineState(pipeline)
+            }
+            let depthWrite = (effectiveBits & GLState.depthMaskTrue.rawValue) != 0
+            let depthTest = (effectiveBits & GLState.depthTestDisable.rawValue) == 0
+            let depthEqual = (effectiveBits & GLState.depthFuncEqual.rawValue) != 0
+            let depthState = pipelineManager.getDepthState(write: depthWrite, test: depthTest, equal: depthEqual)
+            encoder.setDepthStencilState(depthState)
+            encoder.setCullMode(.none)
 
-        // Write stage uniforms
-        writeEntityStageUniforms(
-            fragmentTable: fragmentTable,
-            stageUniformBuffer: stageUniformBuffer,
-            stageUniformDrawIndex: &stageUniformDrawIndex,
-            stageUniformAlignment: stageUniformAlignment,
-            color: entColor
-        )
+            // Compute shader-aware stage uniforms
+            let time = Float(ProcessInfo.processInfo.systemUptime) - entity.shaderTime
+            let stageUniforms = ShaderEval.shared.computeStageUniforms(
+                stage: stage, time: time, entityColor: entColor
+            )
+            if let uniformBuf = stageUniformBuffer {
+                let offset = stageUniformDrawIndex * stageUniformAlignment
+                guard offset + MemoryLayout<Q3StageUniforms>.size <= uniformBuf.length else { return }
+                let ptr = (uniformBuf.contents() + offset).bindMemory(to: Q3StageUniforms.self, capacity: 1)
+                ptr.pointee = stageUniforms
+                fragmentTable.setAddress(uniformBuf.gpuAddress + UInt64(offset), index: BufferIndex.stageUniforms.rawValue)
+                stageUniformDrawIndex += 1
+            }
+        } else {
+            // Fallback: default alpha-blended pipeline
+            let key = PipelineKey(
+                srcBlend: 0x05,   // GLS_SRCBLEND_SRC_ALPHA
+                dstBlend: 0x06,   // GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA
+                depthWrite: false,
+                depthTest: true,
+                cullMode: 2,      // two-sided
+                alphaTest: 0
+            )
+            if let pipeline = try? pipelineManager.getOrCreatePipeline(key: key, view: view) {
+                encoder.setRenderPipelineState(pipeline)
+            }
+            let depthState = pipelineManager.getDepthState(write: false, test: true)
+            encoder.setDepthStencilState(depthState)
+            encoder.setCullMode(.none)
+
+            writeEntityStageUniforms(
+                fragmentTable: fragmentTable,
+                stageUniformBuffer: stageUniformBuffer,
+                stageUniformDrawIndex: &stageUniformDrawIndex,
+                stageUniformAlignment: stageUniformAlignment,
+                color: entColor
+            )
+        }
 
         // Draw
         let idxByteOffset = baseIdx * MemoryLayout<UInt32>.stride

@@ -40,7 +40,13 @@ class ShaderParser {
     }
 
     func findShader(_ name: String) -> Q3ShaderDef? {
-        return shaderDefs[name.lowercased()]
+        let key = name.lowercased()
+        if let def = shaderDefs[key] { return def }
+        // MD3 models often store shader names with .tga/.jpg extension but
+        // shader scripts define them without — strip extension and retry
+        let base = (key as NSString).deletingPathExtension
+        if base != key, let def = shaderDefs[base] { return def }
+        return nil
     }
 
     // MARK: - Shader File Parsing
@@ -403,7 +409,13 @@ class ShaderParser {
                         mod.wave = parseWaveform(&tokens)
                     case "turb":
                         mod.type = .turbulent
-                        mod.wave = parseWaveform(&tokens)
+                        // Q3 turb takes 4 values (base, amp, phase, freq) — no function name.
+                        // Using parseWaveform here would consume an extra token (the closing brace).
+                        mod.wave.func_ = .sin
+                        mod.wave.base = Float(tokens.next() ?? "0") ?? 0
+                        mod.wave.amplitude = Float(tokens.next() ?? "0") ?? 0
+                        mod.wave.phase = Float(tokens.next() ?? "0") ?? 0
+                        mod.wave.frequency = Float(tokens.next() ?? "0") ?? 0
                     case "transform":
                         mod.type = .transform
                         mod.matrix.0.0 = Float(tokens.next() ?? "1") ?? 1

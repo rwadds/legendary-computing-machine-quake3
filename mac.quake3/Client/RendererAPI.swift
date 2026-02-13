@@ -118,9 +118,15 @@ class RendererAPI {
         nextShaderHandle += 1
         registeredShaders[name.lowercased()] = handle
         shaderNames[handle] = name.lowercased()
-        // Pre-load texture for 2D rendering
+        // Pre-load texture for 2D rendering — resolve through shader def first
         if let tc = textureCache {
-            shaderToTexture[handle] = tc.findOrLoad(name)
+            if let shaderDef = ShaderParser.shared.findShader(name),
+               let firstStage = shaderDef.stages.first(where: { $0.active }),
+               let imageName = firstStage.bundles[0].imageNames.first {
+                shaderToTexture[handle] = tc.findOrLoad(imageName)
+            } else {
+                shaderToTexture[handle] = tc.findOrLoad(name)
+            }
         }
         return handle
     }
@@ -134,9 +140,16 @@ class RendererAPI {
         if let texHandle = shaderToTexture[shaderHandle] {
             return texHandle
         }
-        // Lazy resolve — try loading now
+        // Lazy resolve — try shader def first, then direct name
         if let tc = textureCache, let name = shaderNames[shaderHandle] {
-            let texHandle = tc.findOrLoad(name)
+            let texHandle: Int
+            if let shaderDef = ShaderParser.shared.findShader(name),
+               let firstStage = shaderDef.stages.first(where: { $0.active }),
+               let imageName = firstStage.bundles[0].imageNames.first {
+                texHandle = tc.findOrLoad(imageName)
+            } else {
+                texHandle = tc.findOrLoad(name)
+            }
             shaderToTexture[shaderHandle] = texHandle
             return texHandle
         }

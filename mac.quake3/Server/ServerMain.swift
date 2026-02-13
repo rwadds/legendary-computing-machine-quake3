@@ -51,9 +51,6 @@ class ServerMain {
     // Snapshot counter
     var snapshotCounter: Int32 = 0
 
-    // Debug
-    var eibTouchTriggersCount: Int = 0
-
     // Game VM
     var gameVM: QVM?
 
@@ -254,80 +251,11 @@ class ServerMain {
                 // Tick bot AI
                 _ = QVMInterpreter.call(gvm, command: GameExport.botAIStartFrame.rawValue, args: [time])
 
-                // DEBUG: one-time dump at 2s and 10s — show item entities & player bounds
-                if time == 2000 || time == 10000 {
-                    dumpItemDiagnostics(vm: gvm)
-                }
             }
         }
 
         // Send client messages
         sendClientMessages()
-    }
-
-    // MARK: - Diagnostics
-
-    private func dumpItemDiagnostics(vm: QVM) {
-        Q3Console.shared.print("[ITEM-DIAG] === t=\(time)ms, numEntities=\(numEntities) entitySize=\(gentitySize) ===")
-
-        // Player entity (ent#0) — compare multiple origin sources
-        if gentitiesBaseAddr != 0 && gentitySize > 0 {
-            let playerAddr = gentitiesBaseAddr
-            let playerShared = playerAddr + 416
-            // entityShared_t fields
-            let rCurrentOrigin = readVec3(vm: vm, addr: playerShared + 72)
-            let rMins = readVec3(vm: vm, addr: playerShared + 20)
-            let rMaxs = readVec3(vm: vm, addr: playerShared + 32)
-            let rContents = vm.readInt32(fromData: Int(playerShared) + 44)
-            // entityState_t fields
-            let sPosBase = readVec3(vm: vm, addr: playerAddr + 24)    // pos.trBase
-            let sOrigin = readVec3(vm: vm, addr: playerAddr + 92)     // s.origin (separate field!)
-            // playerState.origin
-            let psOrigin = gameClientsBaseAddr != 0 ? readVec3(vm: vm, addr: gameClientsBaseAddr + 20) : Vec3.zero
-
-            Q3Console.shared.print("[ITEM-DIAG] Player ent#0:")
-            Q3Console.shared.print("  r.currentOrigin = \(rCurrentOrigin)")
-            Q3Console.shared.print("  s.pos.trBase    = \(sPosBase)")
-            Q3Console.shared.print("  s.origin        = \(sOrigin)")
-            Q3Console.shared.print("  ps.origin       = \(psOrigin)")
-            Q3Console.shared.print("  r.mins=\(rMins) r.maxs=\(rMaxs) r.contents=0x\(String(rContents, radix: 16))")
-        }
-
-        // First 3 items — show ALL origin-related fields
-        var itemCount = 0
-        for i in 0..<numEntities {
-            guard i < MAX_GENTITIES else { break }
-            let entAddr = gentitiesBaseAddr + Int32(i * gentitySize)
-            let eType = vm.readInt32(fromData: Int(entAddr) + 4)
-            if eType == 2 {  // ET_ITEM
-                let sharedBase = entAddr + 416
-                let rOrigin = readVec3(vm: vm, addr: sharedBase + 72)
-                let rMins = readVec3(vm: vm, addr: sharedBase + 20)
-                let rMaxs = readVec3(vm: vm, addr: sharedBase + 32)
-                let rContents = vm.readInt32(fromData: Int(sharedBase) + 44)
-                let sPosBase = readVec3(vm: vm, addr: entAddr + 24)
-                let sOrigin = readVec3(vm: vm, addr: entAddr + 92)
-                let modelIndex = vm.readInt32(fromData: Int(entAddr) + 160)
-                if itemCount < 3 {
-                    Q3Console.shared.print("[ITEM-DIAG] Item ent#\(i) modelIdx=\(modelIndex):")
-                    Q3Console.shared.print("  r.currentOrigin = \(rOrigin)")
-                    Q3Console.shared.print("  s.pos.trBase    = \(sPosBase)")
-                    Q3Console.shared.print("  s.origin        = \(sOrigin)")
-                    Q3Console.shared.print("  r.mins=\(rMins) r.maxs=\(rMaxs) r.contents=0x\(String(rContents, radix: 16))")
-
-                    // Raw hex dump of entityShared_t first 100 bytes
-                    var hexDump = ""
-                    for off in stride(from: 0, to: 100, by: 4) {
-                        let val = vm.readInt32(fromData: Int(sharedBase) + off)
-                        hexDump += String(format: "%02d:%08X ", off, UInt32(bitPattern: val))
-                        if off % 20 == 16 { hexDump += "\n  " }
-                    }
-                    Q3Console.shared.print("  shared raw: \(hexDump)")
-                }
-                itemCount += 1
-            }
-        }
-        Q3Console.shared.print("[ITEM-DIAG] Total items: \(itemCount)")
     }
 
     // MARK: - Client Connection

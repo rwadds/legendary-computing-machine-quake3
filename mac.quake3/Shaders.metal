@@ -177,9 +177,10 @@ fragment float4 q3FragmentShader(
         if (color.a < stageUniforms.alphaTestValue) discard_fragment();
     }
 
-    // Force output alpha to 1.0 — macOS compositor uses framebuffer alpha for
-    // window transparency; we always want opaque pixels for non-discarded fragments
-    return float4(color.rgb, 1.0);
+    // Output real alpha — needed for srcAlpha/oneMinusSrcAlpha RGB blending.
+    // Framebuffer alpha is preserved via pipeline config: opaque pipelines mask
+    // alpha writes, blended pipelines use alpha blend factors zero/one.
+    return color;
 }
 
 // MARK: - Q3 2D UI Shaders
